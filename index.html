@@ -1,0 +1,795 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Camera, Upload, Sparkles, Plus, Trash2, Check, RefreshCw, Key, 
+  Droplet, Award, Flame, Activity, User, Sun, Dumbbell, Feather, 
+  Settings, Zap, AlertCircle, ChevronRight
+} from 'lucide-react';
+
+export default function App() {
+  // ---------------------------------------------------------------------------
+  // 1. 狀態管理 (User, Daily Logs, Settings)
+  // ---------------------------------------------------------------------------
+  
+  // 用戶與情境設定 (James vs Sandy)
+  const [currentUser, setCurrentUser] = useState('James'); // 'James' | 'Sandy'
+  const [dayType, setDayType] = useState('workout'); // 'workout' | 'rest'
+  
+  // API Key (自動儲存至 LocalStorage)
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [tempApiKey, setTempApiKey] = useState('');
+
+  // 用戶目標設定
+  const userProfiles = {
+    James: {
+      name: 'James',
+      role: '乾淨增肌目標',
+      targets: {
+        workout: { calories: 2800, protein: 180, carbs: 320, fat: 80 },
+        rest: { calories: 2300, protein: 180, carbs: 210, fat: 75 }
+      },
+      waterTarget: 3500
+    },
+    Sandy: {
+      name: 'Sandy',
+      role: '體雕減脂目標',
+      targets: {
+        workout: { calories: 1700, protein: 110, carbs: 175, fat: 50 },
+        rest: { calories: 1500, protein: 110, carbs: 130, fat: 48 }
+      },
+      waterTarget: 2500
+    }
+  };
+
+  const activeTarget = userProfiles[currentUser].targets[dayType];
+  const activeWaterTarget = userProfiles[currentUser].waterTarget;
+
+  // 每日數據狀態
+  const [foodLogs, setFoodLogs] = useState([
+    {
+      id: '1',
+      name: '四海遊龍有糖豆漿 + 荷包蛋',
+      calories: 320,
+      protein: 18,
+      carbs: 26,
+      fat: 14,
+      time: '08:30 AM',
+      type: '早餐',
+      notes: '優質蛋白質來源，適度碳水補充晨間能量。',
+      image: null
+    }
+  ]);
+
+  const [waterIntake, setWaterIntake] = useState(1200); // ml
+  const [supplements, setSupplements] = useState([
+    { id: 'creatine', name: '肌酸 (Creatine 5g)', taken: true },
+    { id: 'fish_oil', name: '深海魚油 (Fish Oil)', taken: false },
+    { id: 'multivitamin', name: '綜合維他命', taken: true },
+    { id: 'electrolyte', name: '電解質補充', taken: false }
+  ]);
+
+  // 圖片上傳與 AI 分析狀態
+  const [selectedImage, setSelectedImage] = useState(null); // Base64 or ObjectURL
+  const [imageFile, setImageFile] = useState(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const [mealCategory, setMealCategory] = useState('午餐');
+  const fileInputRef = useRef(null);
+  const cameraInputRef = useRef(null);
+
+  // 計算累積營養總和
+  const totals = foodLogs.reduce(
+    (acc, item) => ({
+      calories: acc.calories + (Number(item.calories) || 0),
+      protein: acc.protein + (Number(item.protein) || 0),
+      carbs: acc.carbs + (Number(item.carbs) || 0),
+      fat: acc.fat + (Number(item.fat) || 0)
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+
+  // 儲存 API Key
+  const handleSaveApiKey = () => {
+    localStorage.setItem('gemini_api_key', tempApiKey.trim());
+    setApiKey(tempApiKey.trim());
+    setShowKeyModal(false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // 2. 圖片處理與 Gemini API 呼叫
+  // ---------------------------------------------------------------------------
+
+  // 選擇或捕捉圖片
+  const handleImageSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setAnalysisError('請上傳有效的圖片檔案 (JPG, PNG等)');
+      return;
+    }
+
+    setImageFile(file);
+    setAnalysisError('');
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setSelectedImage(reader.result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // 清除選擇的圖片
+  const handleClearImage = () => {
+    setSelectedImage(null);
+    setImageFile(null);
+    setAnalysisError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
+  };
+
+  // 調用真實 Gemini API 進行圖片辨識
+  const analyzeImageWithGemini = async (base64Data, mimeType) => {
+    // 移除 base64 標頭 Prefix (如 "data:image/jpeg;base64,")
+    const cleanBase64 = base64Data.split(',')[1] || base64Data;
+
+    const systemPrompt = `你是一位專業的乾淨增肌減脂營養師。請嚴格分析傳入的食物/餐點/超商包裝/菜單圖片。
+請辨識出圖片中的餐點內容，包含台灣常見超商（7-11, 全家）、速食與在地店家（如四海遊龍、拉亞漢堡等）。
+請估算其熱量與三大巨量營養素（蛋白質、碳水化合物、脂肪），並給予簡短的增肌/減脂營養點評。
+
+請務必僅回傳符合規範的 JSON 格式，格式如下：
+{
+  "food_name": "餐點名稱與說明",
+  "calories": 數字(卡路里),
+  "protein_g": 數字(蛋白質克數),
+  "carbs_g": 數字(碳水化合物克數),
+  "fat_g": 數字(脂肪克數),
+  "notes": "簡短專業營養點評（繁體中文）"
+}`;
+
+    const payload = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: '請分析這張照片中的食物熱量與營養素，並回傳指定的 JSON 結構。' },
+            {
+              inlineData: {
+                mimeType: mimeType || 'image/jpeg',
+                data: cleanBase64
+              }
+            }
+          ]
+        }
+      ],
+      systemInstruction: {
+        parts: [{ text: systemPrompt }]
+      },
+      generationConfig: {
+        responseMimeType: 'application/json'
+      }
+    };
+
+    // 使用 gemini-3-flash-preview 或用戶 key
+    const targetKey = apiKey || '';
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${targetKey}`;
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.error?.message || `API 呼叫失敗 (${response.status})`);
+    }
+
+    const result = await response.json();
+    const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!rawText) throw new Error('Gemini 未回傳有效的分析結果');
+
+    return JSON.parse(rawText);
+  };
+
+  // 執行 AI 辨識 (真實 API)
+  const handleStartAnalysis = async () => {
+    if (!selectedImage) {
+      setAnalysisError('請先上傳或拍攝一張餐點照片！');
+      return;
+    }
+
+    if (!apiKey) {
+      setAnalysisError('請先輸入 Gemini API Key，或點擊「模擬 Gemini 辨識」進行測試。');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalysisError('');
+
+    try {
+      const mimeType = imageFile?.type || 'image/jpeg';
+      const parsedData = await analyzeImageWithGemini(selectedImage, mimeType);
+
+      // 新增至食物紀錄
+      const newLog = {
+        id: Date.now().toString(),
+        name: parsedData.food_name || 'AI 辨識餐點',
+        calories: Number(parsedData.calories) || 0,
+        protein: Number(parsedData.protein_g) || 0,
+        carbs: Number(parsedData.carbs_g) || 0,
+        fat: Number(parsedData.fat_g) || 0,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: mealCategory,
+        notes: parsedData.notes || 'Gemini 智慧辨識完成',
+        image: selectedImage
+      };
+
+      setFoodLogs((prev) => [newLog, ...prev]);
+      handleClearImage();
+    } catch (err) {
+      console.error(err);
+      setAnalysisError(`辨識失敗: ${err.message}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // 模擬辨識功能 (Fallback Mode)
+  const handleMockAnalysis = () => {
+    setIsAnalyzing(true);
+    setAnalysisError('');
+
+    setTimeout(() => {
+      const mockResults = [
+        {
+          name: '拉亞漢堡 缺角嫩雞麥醬蛋餅 + 拿鐵',
+          calories: 480,
+          protein: 24,
+          carbs: 42,
+          fat: 22,
+          notes: '蛋白質比例優良，適合做為訓練日能量補充，脂質稍微偏高。'
+        },
+        {
+          name: '7-11 雞胸肉便當 + 無糖黑豆漿',
+          calories: 520,
+          protein: 42,
+          carbs: 58,
+          fat: 12,
+          notes: '極佳的乾淨增肌組合！高蛋白低脂肪，碳水結構優良。'
+        },
+        {
+          name: '四海遊龍 鮮肉水餃 10顆 + 酸辣湯',
+          calories: 680,
+          protein: 26,
+          carbs: 72,
+          fat: 31,
+          notes: '水餃油脂與碳水含量較高，建議搭配無糖豆漿提升蛋白質比例。'
+        }
+      ];
+
+      const randomMock = mockResults[Math.floor(Math.random() * mockResults.length)];
+
+      const newLog = {
+        id: Date.now().toString(),
+        name: randomMock.name,
+        calories: randomMock.calories,
+        protein: randomMock.protein,
+        carbs: randomMock.carbs,
+        fat: randomMock.fat,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: mealCategory,
+        notes: `[模擬測試] ${randomMock.notes}`,
+        image: selectedImage || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&auto=format&fit=crop&q=80'
+      };
+
+      setFoodLogs((prev) => [newLog, ...prev]);
+      setIsAnalyzing(false);
+      handleClearImage();
+    }, 1200);
+  };
+
+  // 刪除食物紀錄
+  const handleDeleteLog = (id) => {
+    setFoodLogs((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // 水分與補充劑操作
+  const addWater = (amount) => setWaterIntake((prev) => Math.min(prev + amount, 6000));
+  const toggleSupplement = (id) => {
+    setSupplements((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, taken: !s.taken } : s))
+    );
+  };
+
+  // ---------------------------------------------------------------------------
+  // 3. UI 畫面元件 render
+  // ---------------------------------------------------------------------------
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans pb-12">
+      {/* 頂部 Header & 導覽 */}
+      <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-3">
+          {/* Logo */}
+          <div className="flex items-center space-x-2">
+            <div className="bg-gradient-to-tr from-emerald-500 to-cyan-500 p-2 rounded-xl text-slate-950 shadow-lg shadow-emerald-500/20">
+              <Dumbbell className="w-6 h-6 stroke-[2.5]" />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
+                FIT-AI 智能健身營養日誌
+              </h1>
+              <p className="text-xs text-slate-400">Gemini 視覺辨識 & 體態追蹤</p>
+            </div>
+          </div>
+
+          {/* 控制選項: 切換使用者、訓練日、API Key */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* 使用者切換 */}
+            <div className="bg-slate-800/80 p-1 rounded-lg border border-slate-700 flex text-xs">
+              <button
+                onClick={() => setCurrentUser('James')}
+                className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+                  currentUser === 'James'
+                    ? 'bg-emerald-500 text-slate-950 font-bold shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                James (增肌)
+              </button>
+              <button
+                onClick={() => setCurrentUser('Sandy')}
+                className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+                  currentUser === 'Sandy'
+                    ? 'bg-cyan-500 text-slate-950 font-bold shadow'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Sandy (減脂)
+              </button>
+            </div>
+
+            {/* 訓練日/休息日 切換 */}
+            <button
+              onClick={() => setDayType(dayType === 'workout' ? 'rest' : 'workout')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-all ${
+                dayType === 'workout'
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
+                  : 'bg-blue-500/10 border-blue-500/40 text-blue-400'
+              }`}
+            >
+              {dayType === 'workout' ? (
+                <>
+                  <Flame className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                  訓練日
+                </>
+              ) : (
+                <>
+                  <Sun className="w-3.5 h-3.5 text-blue-400" />
+                  休息日
+                </>
+              )}
+            </button>
+
+            {/* API Key 設定按鈕 */}
+            <button
+              onClick={() => {
+                setTempApiKey(apiKey);
+                setShowKeyModal(true);
+              }}
+              className={`p-2 rounded-lg text-xs border flex items-center gap-1 transition-all ${
+                apiKey
+                  ? 'bg-emerald-900/30 border-emerald-600/50 text-emerald-400'
+                  : 'bg-rose-900/30 border-rose-600/50 text-rose-300 animate-pulse'
+              }`}
+              title="設定 Gemini API Key"
+            >
+              <Key className="w-4 h-4" />
+              <span className="hidden sm:inline">{apiKey ? 'API 已連線' : '輸入 Key'}</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* API Key 設定彈窗 Modal */}
+      {showKeyModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-emerald-400">
+              <Key className="w-5 h-5" />
+              <h3 className="text-lg font-bold text-slate-100">設定 Gemini API Key</h3>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              請輸入您的 Google Gemini API Key 以啟用真實 AI 辨識功能。Key 將安全存放於瀏覽器 LocalStorage。
+            </p>
+            <div>
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                value={tempApiKey}
+                onChange={(e) => setTempApiKey(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setShowKeyModal(false)}
+                className="px-4 py-2 rounded-xl text-xs text-slate-400 hover:bg-slate-800"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveApiKey}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs shadow-lg shadow-emerald-500/20"
+              >
+                儲存設定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 主內容區 */}
+      <main className="max-w-6xl mx-auto px-4 mt-6 space-y-6">
+        
+        {/* 用戶狀態與熱量總覽卡片 */}
+        <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* 目標概覽 */}
+          <div className="md:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+            <div>
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
+                  {userProfiles[currentUser].role}
+                </span>
+                <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700">
+                  {dayType === 'workout' ? '高碳水日' : '低碳水日'}
+                </span>
+              </div>
+              <h2 className="text-2xl font-black text-slate-100">{currentUser} 的今日目標</h2>
+            </div>
+
+            <div className="mt-4 space-y-1">
+              <div className="text-xs text-slate-400">總卡路里配額</div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-3xl font-extrabold text-amber-400">{totals.calories}</span>
+                <span className="text-sm text-slate-400">/ {activeTarget.calories} kcal</span>
+              </div>
+            </div>
+          </div>
+
+          {/* 巨量營養素進度條 (3 欄) */}
+          <div className="md:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
+            {/* 蛋白質 */}
+            <div className="space-y-2 bg-slate-950/50 p-3.5 rounded-xl border border-slate-800/80">
+              <div className="flex justify-between text-xs">
+                <span className="font-semibold text-rose-400 flex items-center gap-1">
+                  <Activity className="w-3.5 h-3.5" /> 蛋白質 (P)
+                </span>
+                <span className="text-slate-400">{totals.protein}g / {activeTarget.protein}g</span>
+              </div>
+              <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-rose-500 to-pink-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((totals.protein / activeTarget.protein) * 100, 100)}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-slate-500 text-right">
+                剩餘 {Math.max(activeTarget.protein - totals.protein, 0)}g
+              </div>
+            </div>
+
+            {/* 碳水化合物 */}
+            <div className="space-y-2 bg-slate-950/50 p-3.5 rounded-xl border border-slate-800/80">
+              <div className="flex justify-between text-xs">
+                <span className="font-semibold text-amber-400 flex items-center gap-1">
+                  <Zap className="w-3.5 h-3.5" /> 碳水化合物 (C)
+                </span>
+                <span className="text-slate-400">{totals.carbs}g / {activeTarget.carbs}g</span>
+              </div>
+              <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-amber-500 to-yellow-400 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((totals.carbs / activeTarget.carbs) * 100, 100)}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-slate-500 text-right">
+                剩餘 {Math.max(activeTarget.carbs - totals.carbs, 0)}g
+              </div>
+            </div>
+
+            {/* 脂肪 */}
+            <div className="space-y-2 bg-slate-950/50 p-3.5 rounded-xl border border-slate-800/80">
+              <div className="flex justify-between text-xs">
+                <span className="font-semibold text-cyan-400 flex items-center gap-1">
+                  <Feather className="w-3.5 h-3.5" /> 脂肪 (F)
+                </span>
+                <span className="text-slate-400">{totals.fat}g / {activeTarget.fat}g</span>
+              </div>
+              <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min((totals.fat / activeTarget.fat) * 100, 100)}%` }}
+                />
+              </div>
+              <div className="text-[10px] text-slate-500 text-right">
+                剩餘 {Math.max(activeTarget.fat - totals.fat, 0)}g
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 主要工作區：左邊 AI 辨識輸入，右邊 餐點日誌與水份補充 */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* 左欄：Gemini AI 圖片拍照辨識專區 (5 欄) */}
+          <section className="lg:col-span-5 space-y-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 relative">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex items-center space-x-2">
+                  <Sparkles className="w-5 h-5 text-emerald-400 animate-pulse" />
+                  <h3 className="font-bold text-slate-100">Gemini AI 視覺智慧辨識</h3>
+                </div>
+                {/* 餐點別選單 */}
+                <select
+                  value={mealCategory}
+                  onChange={(e) => setMealCategory(e.target.value)}
+                  className="bg-slate-950 border border-slate-700 text-xs text-slate-300 rounded-lg px-2.5 py-1 focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="早餐">早餐</option>
+                  <option value="午餐">午餐</option>
+                  <option value="晚餐">晚餐</option>
+                  <option value="點心/點後">點心 / 練後補充</option>
+                </select>
+              </div>
+
+              {/* 上傳與拍照預覽區域 */}
+              <div className="space-y-3">
+                {selectedImage ? (
+                  <div className="relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 aspect-video flex items-center justify-center">
+                    <img src={selectedImage} alt="餐點預覽" className="w-full h-full object-cover" />
+                    <button
+                      onClick={handleClearImage}
+                      className="absolute top-2 right-2 bg-slate-900/80 hover:bg-rose-600 text-white p-1.5 rounded-full transition-all border border-slate-700"
+                      title="移除圖片"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="border-2 border-dashed border-slate-800 hover:border-emerald-500/50 rounded-xl p-6 text-center bg-slate-950/40 transition-all space-y-3">
+                    <div className="flex justify-center gap-3">
+                      <div className="p-3 bg-slate-800 rounded-full text-slate-400">
+                        <Upload className="w-6 h-6" />
+                      </div>
+                      <div className="p-3 bg-slate-800 rounded-full text-slate-400">
+                        <Camera className="w-6 h-6" />
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-slate-300">上傳或拍攝食物/營養標示照片</p>
+                      <p className="text-xs text-slate-500 mt-1">支援台灣超商、拉亞漢堡、四海遊龍等照片</p>
+                    </div>
+
+                    <div className="flex justify-center gap-2 pt-1">
+                      {/* 上傳檔案按鈕 */}
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-medium text-slate-200"
+                      >
+                        選擇圖片檔案
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageSelect}
+                        className="hidden"
+                      />
+
+                      {/* 拍照按鈕 (手機可用) */}
+                      <button
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-medium text-slate-200"
+                      >
+                        開啟相機拍照
+                      </button>
+                      <input
+                        ref={cameraInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={handleImageSelect}
+                        className="hidden"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 錯誤說明提示 */}
+              {analysisError && (
+                <div className="bg-rose-950/40 border border-rose-800/60 rounded-xl p-3 flex items-start gap-2 text-xs text-rose-300">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{analysisError}</span>
+                </div>
+              )}
+
+              {/* 執行辨識操作區 */}
+              <div className="space-y-2 pt-1">
+                <button
+                  onClick={handleStartAnalysis}
+                  disabled={isAnalyzing}
+                  className="w-full py-3 bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-xl text-sm shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all"
+                >
+                  {isAnalyzing ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Gemini 深度分析中...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" />
+                      開始 Gemini AI 真實辨識
+                    </>
+                  )}
+                </button>
+
+                {/* 模擬測試按鈕 (Fallback Mode) */}
+                <button
+                  onClick={handleMockAnalysis}
+                  disabled={isAnalyzing}
+                  className="w-full py-2 bg-slate-800/80 hover:bg-slate-800 text-slate-300 text-xs rounded-xl font-medium border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  無 API Key？使用模擬 Gemini 辨識測試
+                </button>
+              </div>
+            </div>
+
+            {/* 水分補充與每日補給品清單 (左欄下方) */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              {/* 水分追蹤 */}
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                  <div className="flex items-center gap-1.5 text-cyan-400 font-bold text-sm">
+                    <Droplet className="w-4 h-4 fill-cyan-400" /> 水分追蹤
+                  </div>
+                  <span className="text-xs text-slate-400">
+                    {waterIntake} / {activeWaterTarget} ml
+                  </span>
+                </div>
+                <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden mb-3">
+                  <div
+                    className="bg-cyan-400 h-full rounded-full transition-all duration-300"
+                    style={{ width: `${Math.min((waterIntake / activeWaterTarget) * 100, 100)}%` }}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => addWater(300)}
+                    className="py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-semibold text-cyan-300 transition-all"
+                  >
+                    +300 ml (一杯水)
+                  </button>
+                  <button
+                    onClick={() => addWater(500)}
+                    className="py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-semibold text-cyan-300 transition-all"
+                  >
+                    +500 ml (水壺)
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-800 pt-3">
+                <div className="flex items-center gap-1.5 text-amber-400 font-bold text-sm mb-2.5">
+                  <Award className="w-4 h-4" /> 每日補給品打卡
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {supplements.map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => toggleSupplement(item.id)}
+                      className={`p-2 rounded-xl text-xs font-medium border flex items-center justify-between transition-all ${
+                        item.taken
+                          ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300'
+                          : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <span className="truncate">{item.name}</span>
+                      {item.taken && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* 右欄：今日餐點紀錄與明細 (7 欄) */}
+          <section className="lg:col-span-7 space-y-4">
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                <h3 className="font-bold text-slate-100 text-base">今日飲食明細紀錄</h3>
+                <span className="text-xs text-slate-400">共 {foodLogs.length} 筆項目</span>
+              </div>
+
+              {foodLogs.length === 0 ? (
+                <div className="text-center py-12 text-slate-500 space-y-2">
+                  <p className="text-sm">今天尚未新增任何餐點紀錄</p>
+                  <p className="text-xs">使用左側 Gemini AI 拍攝上傳你的第一餐吧！</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {foodLogs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="bg-slate-950/60 border border-slate-800 hover:border-slate-700 rounded-xl p-4 transition-all space-y-2"
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="flex gap-3 items-start">
+                          {log.image && (
+                            <img
+                              src={log.image}
+                              alt={log.name}
+                              className="w-14 h-14 rounded-lg object-cover border border-slate-800 shrink-0"
+                            />
+                          )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="bg-slate-800 text-slate-300 text-[10px] px-2 py-0.5 rounded font-semibold">
+                                {log.type}
+                              </span>
+                              <span className="text-xs text-slate-500">{log.time}</span>
+                            </div>
+                            <h4 className="font-bold text-slate-100 text-sm mt-0.5">{log.name}</h4>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleDeleteLog(log.id)}
+                          className="text-slate-500 hover:text-rose-400 p-1 transition-colors"
+                          title="刪除紀錄"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* 巨量數據標籤 */}
+                      <div className="grid grid-cols-4 gap-2 pt-2 border-t border-slate-800/80 text-center text-xs">
+                        <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">熱量</span>
+                          <span className="font-extrabold text-amber-400">{log.calories} kcal</span>
+                        </div>
+                        <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">蛋白質</span>
+                          <span className="font-bold text-rose-400">{log.protein}g</span>
+                        </div>
+                        <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">碳水</span>
+                          <span className="font-bold text-amber-300">{log.carbs}g</span>
+                        </div>
+                        <div className="bg-slate-900/80 p-1.5 rounded-lg border border-slate-800">
+                          <span className="text-slate-400 block text-[10px]">脂肪</span>
+                          <span className="font-bold text-cyan-400">{log.fat}g</span>
+                        </div>
+                      </div>
+
+                      {/* AI 點評評語 */}
+                      {log.notes && (
+                        <div className="bg-emerald-950/20 border border-emerald-900/40 rounded-lg p-2.5 text-xs text-emerald-300/90 flex items-start gap-1.5 mt-2">
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                          <span>{log.notes}</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
+}
