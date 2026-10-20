@@ -4,50 +4,37 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>乾淨增肌 AI 追蹤器</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen">
-  <div id="root"></div>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 flex justify-center">
+  <div class="w-full max-w-md space-y-5 pb-16">
+    
+    <!-- 頂部標題與切換 -->
+    <div class="flex justify-between items-center bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div>
+        <h1 class="text-lg font-bold text-emerald-400">⚡ 乾淨增肌 AI</h1>
+        <p class="text-xs text-slate-400">James & Sandy 專屬追蹤器</p>
+      </div>
+      <button onclick="toggleUser()" id="userBtn" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-xl text-sm font-bold border border-slate-600 text-emerald-300">
+        👤 James
+      </button>
+    </div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    <!-- 模式切換 (僅 James 顯示) -->
+    <div id="modeCard" class="grid grid-cols-2 gap-2 bg-slate-800 p-1.5 rounded-xl border border-slate-700">
+      <button onclick="setMode('workout')" id="btnWorkout" class="py-2 text-xs font-bold rounded-lg transition bg-emerald-500 text-slate-950">
+        🏋️ 訓練日 (2,850 kcal)
+      </button>
+      <button onclick="setMode('rest')" id="btnRest" class="py-2 text-xs font-bold rounded-lg transition text-slate-400">
+        🛌 休息日 (2,350 kcal)
+      </button>
+    </div>
 
-    function App() {
-      const [currentUser, setCurrentUser] = useState('James');
-      const [dayType, setDayType] = useState('workout');
-      const [water, setWater] = useState(1300);
-      const [logs, setLogs] = useState([
-        { name: '四海遊龍有糖豆漿', calories: 188, protein: 11.5, carbs: 21, fat: 5.5 },
-        { name: '煎荷包蛋', calories: 80, protein: 6, carbs: 0.5, fat: 6 },
-        { name: '義美鮮蔥蘇打餅乾', calories: 78, protein: 1.5, carbs: 11, fat: 3.3 },
-        { name: '午餐 (炸雞翅+飯+蘋果)', calories: 784, protein: 38.2, carbs: 79.9, fat: 34.3 }
-      ]);
-
-      const totals = logs.reduce((acc, item) => ({
-        calories: acc.calories + item.calories,
-        protein: acc.protein + item.protein,
-        carbs: acc.carbs + item.carbs,
-        fat: acc.fat + item.fat,
-      }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-
-      const target = currentUser === 'James' 
-        ? (dayType === 'workout' ? { cal: 2850, p: 130, c: 335, f: 75, w: 2800 } : { cal: 2350, p: 130, c: 230, f: 65, w: 2200 })
-        : { cal: 1700, p: 75, c: 170, f: 50, w: 2000 };
-
-      return (
-        <div className="max-w-md mx-auto p-4 space-y-6 pb-20">
-          {/* Header */}
-          <div className="flex justify-between items-center bg-slate-800 p-4 rounded-2xl border border-slate-700">
-            <div>
-              <h1 className="text-xl font-bold text-emerald-400">⚡ 乾淨增肌 AI</h1>
-              <p className="text-xs text-slate-400">Vibe Coding 專屬 App</p>
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setCurrentUser(currentUser === 'James' ? 'Sandy' : 'James')}
-                className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium border border-slate-600">
-                👤 {currentUser}
-              </button>
+    <!-- 熱量與營養進度卡片 -->
+    <div class="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4">
+      <div class="flex justify-between items-baseline">
+        <span class="text-slate-400 font-medium text-sm">今日熱量總計</span>
+        <span class="text-2xl font-black text-emerald-400"><span id="calVal">1,090</span> <span class="text-xs font-normal text-slate-400" id="calTarget">/ 2,850 kcal</span></span>
+      </div>
+      <!-- 進度條 -->
+      <div class="w-full bg-slate-700 h-
